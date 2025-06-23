@@ -5,6 +5,7 @@ import (
 	"syscall"
 
 	"github.com/arnab2001/boxy/internal/client"
+	"github.com/arnab2001/boxy/internal/cni"
 	"github.com/containerd/containerd"
 	"github.com/containerd/containerd/errdefs"
 	"github.com/spf13/cobra"
@@ -29,6 +30,17 @@ func init() {
 
 			taskObj, err := cont.Task(ctx, nil)
 			if err == nil {
+				// Get PID for CNI cleanup before killing
+				pid := taskObj.Pid()
+				netnsPath := fmt.Sprintf("/proc/%d/ns/net", pid)
+
+				// Clean up CNI networking before killing (while netns is still available)
+				if cniClient, err := cni.NewClient(); err == nil {
+					if err := cniClient.RemoveNetwork(ctx, args[0], netnsPath); err != nil {
+						fmt.Printf("Warning: failed to cleanup network: %v\n", err)
+					}
+				}
+
 				// 1) ask the task to die
 				if err := taskObj.Kill(ctx, syscall.SIGKILL); err != nil &&
 					!errdefs.IsNotFound(err) {
