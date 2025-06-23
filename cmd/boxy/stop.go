@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/arnab2001/boxy/internal/client"
+	"github.com/arnab2001/boxy/internal/cni"
 	"github.com/containerd/containerd/errdefs"
 	"github.com/spf13/cobra"
 )
@@ -43,6 +44,17 @@ func init() {
 			}
 			if err != nil {
 				return err
+			}
+
+			// Get PID for CNI cleanup before stopping
+			pid := taskObj.Pid()
+			netnsPath := fmt.Sprintf("/proc/%d/ns/net", pid)
+
+			// Clean up CNI networking before stopping (while netns is still available)
+			if cniClient, err := cni.NewClient(); err == nil {
+				if err := cniClient.RemoveNetwork(ctx, args[0], netnsPath); err != nil {
+					fmt.Printf("Warning: failed to cleanup network: %v\n", err)
+				}
 			}
 
 			// 1) try SIGTERM

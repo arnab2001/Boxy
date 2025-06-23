@@ -1,63 +1,36 @@
-## Boxy — a Minimal Container CLI on top of containerd + runc
+# boxy
 
-> **Boxy** is a single-binary command-line tool that gives you the familiar
-> `pull / run / stop / rm / ps` workflow while re-using the proven containerd
-> engine under the hood.
+A tiny container CLI powered by **containerd** and **runc**.
 
----
-
-### 🗂️ Features
-
-| Capability       | Notes                                                                                   |
-| ---------------- | --------------------------------------------------------------------------------------- |
-| `pull`           | Downloads + unpacks an OCI image (progress spinner).                                    |
-| `run`            | Interactive shell by default; `-d` flag for detached mode. Auto-pulls image if missing. |
-| `stop [timeout]` | Sends `SIGTERM`, waits *timeout* (default 10 s), escalates to `SIGKILL`.                |
-| `rm [-f]`        | Deletes container + snapshot. `-f` kills first if still running.                        |
-| `ps`             | Shows **NAME / STATE / PID / IMAGE** for all containers in the `minidock` namespace.    |
+🔥 **No Docker daemon needed** — just containerd (system service) + Linux namespaces.
 
 ---
 
-### 🛠️ Installation
-
-#### Prerequisites
-
-* Linux kernel ≥ 5.4
-* `containerd` v2.x running as a system service
-* Go 1.22+ (only for building)
-
-#### Build & install from source
+## 🚀 Quick start
 
 ```bash
-git clone https://github.com/<you>/boxy.git
-cd boxy
-go build -o boxy ./cmd/boxy        # creates ./boxy
-mkdir -p $HOME/.local/bin
-mv boxy $HOME/.local/bin/
-echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
-source ~/.bashrc
-```
+# Install containerd + runc (Ubuntu/Debian example)
+sudo apt update && sudo apt install -y containerd runc
 
-*(system-wide: `sudo mv boxy /usr/local/bin/`)*
+# Clone & build boxy
+git clone https://github.com/arnab2001/boxy.git
+cd boxy && go build -o boxy ./cmd/boxy
 
-#### One-line install (after you push the repo)
+# Pull an image
+sudo ./boxy pull nginx
 
-```bash
-go install github.com/<you>/boxy/cmd/boxy@latest   # binary lands in $HOME/go/bin
-```
+# Run a container with port forwarding
+sudo ./boxy run --name web -p 8080:80 nginx
 
----
+# Access your container
+curl http://localhost:8080
 
-### 🚀 Quick start
+# List containers
+sudo ./boxy ps
 
-```bash
-boxy pull alpine            # download alpine:latest
-boxy run --name demo alpine # interactive shell
-/ # exit
-boxy run -d --name web alpine sleep 300   # detached
-boxy ps                   # list containers
-boxy stop web             # graceful stop
-boxy rm web               # delete
+# Stop and remove
+sudo ./boxy stop web
+sudo ./boxy rm web
 ```
 
 ---
@@ -76,15 +49,30 @@ boxy pull nginx:1.27
 </details>
 
 <details>
-<summary><code>boxy run --name &lt;id&gt; [-d] &lt;image&gt; [cmd...]</code></summary>
+<summary><code>boxy run --name &lt;id&gt; [-d] [-p HOST:CONT] &lt;image&gt; [cmd...]</code></summary>
 
-* Interactive (default) uses the image’s default CMD or your override.
+* Interactive (default) uses the image's default CMD or your override.
 * Detached `-d` runs in background with no TTY.
+* Port forwarding `-p HOST:CONT[/PROTOCOL]` maps host ports to container ports.
 
 ```bash
+# Basic container
 boxy run --name api alpine        # /bin/sh
+
+# Background container
 boxy run -d --name redis redis:7  # background
+
+# Port forwarding examples
+boxy run --name web -p 8080:80 nginx                    # TCP (default)
+boxy run --name app -p 3000:3000/tcp -p 5353:53/udp app # Multiple ports
+boxy run --name db -p 127.0.0.1:5432:5432 postgres     # Bind to specific IP
 ```
+
+**Port Publishing Syntax:**
+- `-p 8080:80` - Map host port 8080 to container port 80 (TCP)
+- `-p 8080:80/tcp` - Explicit TCP protocol
+- `-p 9000:9000/udp` - UDP protocol
+- `-p 127.0.0.1:5432:5432` - Bind to specific host IP (coming soon)
 
 </details>
 
@@ -95,7 +83,7 @@ Shows running/stopped containers.
 
 ```
 NAME   STATE     PID   IMAGE
-api    RUNNING   2419  docker.io/library/alpine:latest
+web    RUNNING   2419  docker.io/library/nginx:latest
 redis  STOPPED   -     docker.io/library/redis:7
 ```
 
@@ -104,7 +92,7 @@ redis  STOPPED   -     docker.io/library/redis:7
 <details>
 <summary><code>boxy stop &lt;name&gt; [timeout]</code></summary>
 
-Graceful shutdown.
+Graceful shutdown with automatic network cleanup.
 
 ```bash
 boxy stop redis 5s
@@ -115,14 +103,50 @@ boxy stop redis 5s
 <details>
 <summary><code>boxy rm [-f] &lt;name&gt;</code></summary>
 
-Remove container and snapshot. Use `-f` to kill first.
+Remove container and snapshot with network cleanup.
 
 ```bash
-boxy rm api
-boxy rm -f redis
+boxy rm web
+boxy rm -f redis  # force kill first
 ```
 
 </details>
+
+---
+
+### 🌐 Networking & Port Publishing
+
+Boxy uses **CNI (Container Network Interface)** for networking with automatic port forwarding via iptables.
+
+#### Requirements
+- CNI plugins installed at `/opt/cni/bin/` (bridge, portmap)
+- iptables for port forwarding rules
+
+#### Install CNI Plugins
+```bash
+# Download and install CNI plugins
+wget https://github.com/containernetworking/plugins/releases/download/v1.4.1/cni-plugins-linux-amd64-v1.4.1.tgz
+sudo mkdir -p /opt/cni/bin
+sudo tar -xzf cni-plugins-linux-amd64-v1.4.1.tgz -C /opt/cni/bin
+```
+
+#### Network Configuration
+Boxy automatically creates a bridge network (`boxy0`) with:
+- **Root mode**: `172.18.0.0/16` subnet
+- **Rootless mode**: `10.88.0.0/16` subnet
+
+#### Rootless Support
+Run boxy without root privileges:
+
+```bash
+# Rootless mode (experimental)
+./boxy run --name app -p 8080:80 nginx
+```
+
+**Rootless Limitations:**
+- Privileged ports (<1024) require `bypass4netns` plugin
+- Some network features may be limited
+- User namespace restrictions apply
 
 ---
 
@@ -136,21 +160,24 @@ containerd (system daemon)
    │ fork/exec
    ▼
 runc  →  Linux namespaces, cgroups
+   │
+   ▼
+CNI plugins → bridge + iptables (port forwarding)
 ```
-
-* Networking, volumes, and build support are pluggable and can be added later
-  (CNI, BuildKit, etc.).
 
 ---
 
 ### 🌱 Roadmap ideas
 
-| Priority | Planned feature                                             |
-| -------- | ----------------------------------------------------------- |
-| ⭐⭐⭐      | `logs <name>` (stream stdout/stderr of detached containers) |
-| ⭐⭐       | `-p HOST:CONT` via CNI bridge + portmap                     |
-| ⭐        | BuildKit integration (`boxy build -t myapp .`)              |
-| ⭐        | Push / login to a local registry (`registry:2` or ORAS)     |
+| Priority | Status | Planned feature                                             |
+| -------- | ------ | ----------------------------------------------------------- |
+| ⭐⭐⭐      | ✅     | `-p HOST:CONT` via CNI bridge + portmap                     |
+| ⭐⭐⭐      | 🔄     | `logs <name>` (stream stdout/stderr of detached containers) |
+| ⭐⭐       | 📋     | BuildKit integration (`boxy build -t myapp .`)              |
+| ⭐        | 📋     | Push / login to a local registry (`registry:2` or ORAS)     |
+| ⭐        | 📋     | Volume mounts and bind mounts                               |
+
+**Legend:** ✅ Complete | 🔄 In Progress | 📋 Planned
 
 ---
 
@@ -159,9 +186,25 @@ runc  →  Linux namespaces, cgroups
 1. Fork the repo & create a feature branch.
 2. Follow *golangci-lint run* (no warnings).
 3. Make PRs small and focused.
+4. Add tests for new functionality in the `test/` directory.
 
 ---
 
-### 📜 License
+### 🧪 Testing
 
-MIT © 2025 – free to use, modify, and distribute.
+```bash
+# Run all tests
+cd test && go test -v .
+
+# Run benchmarks
+go test -bench=.
+
+# Run with coverage
+go test -cover .
+```
+
+---
+
+### 📝 License
+
+MIT License - see [LICENSE](LICENSE) for details.

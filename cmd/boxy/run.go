@@ -7,6 +7,7 @@ import (
 	"syscall"
 
 	"github.com/arnab2001/boxy/internal/client"
+	"github.com/arnab2001/boxy/internal/cni"
 	console "github.com/containerd/console"
 	"github.com/containerd/containerd"
 	"github.com/containerd/containerd/cio"
@@ -15,6 +16,8 @@ import (
 	refdocker "github.com/containerd/containerd/reference/docker"
 	"github.com/spf13/cobra"
 )
+
+var portFlags []string
 
 func init() {
 	cmd := &cobra.Command{
@@ -25,6 +28,7 @@ func init() {
 	}
 	cmd.Flags().String("name", "", "container name (required)")
 	cmd.Flags().BoolP("detach", "d", false, "run in background (no TTY)")
+	cmd.Flags().StringSliceVarP(&portFlags, "publish", "p", nil, "HOST:CONT[,PROTO]")
 	cmd.MarkFlagRequired("name")
 	rootCmd.AddCommand(cmd)
 }
@@ -32,6 +36,29 @@ func init() {
 func runE(cmd *cobra.Command, args []string) error {
 	name, _ := cmd.Flags().GetString("name")
 	detach, _ := cmd.Flags().GetBool("detach")
+
+	// Parse port flags
+	portMappings, err := ParsePorts(portFlags)
+	if err != nil {
+		return err
+	}
+	if len(portMappings) > 0 {
+		fmt.Printf("Parsed port mappings: %+v\n", portMappings)
+		
+		// Check for port conflicts
+		if err := checkPortConflicts(portMappings); err != nil {
+			return err
+		}
+	}
+
+	// Initialize CNI client if port mappings are specified
+	var cniClient *cni.Client
+	if len(portMappings) > 0 {
+		cniClient, err = cni.NewClient()
+		if err != nil {
+			return fmt.Errorf("failed to initialize CNI: %v", err)
+		}
+	}
 
 	// ── normalise reference ────────────────────────────────────
 	named, err := refdocker.ParseDockerRef(args[0])
@@ -95,6 +122,33 @@ func runE(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Printf("▶︎ started %s (PID %d)\n", name, task.Pid())
+
+	// ── CNI network setup ──────────────────────────────────────
+	if cniClient != nil && len(portMappings) > 0 {
+		netnsPath := fmt.Sprintf("/proc/%d/ns/net", task.Pid())
+		
+		// Convert port mappings to CNI format
+		var cniPortMappings []cni.PortMapping
+		for _, pm := range portMappings {
+			cniPortMappings = append(cniPortMappings, cni.PortMapping{
+				HostPort:      pm.HostPort,
+				ContainerPort: pm.ContainerPort,
+				Protocol:      pm.Protocol,
+				HostIP:        pm.HostIP,
+			})
+		}
+
+		result, err := cniClient.SetupNetwork(ctx, name, netnsPath, cniPortMappings)
+		if err != nil {
+			// Clean up task if network setup fails
+			task.Kill(ctx, syscall.SIGKILL)
+			task.Delete(ctx)
+			cont.Delete(ctx, containerd.WithSnapshotCleanup)
+			return fmt.Errorf("failed to setup network: %v", err)
+		}
+
+		fmt.Printf("✔ network configured with IP: %s\n", result.Interfaces["eth0"].IPConfigs[0].IP.String())
+	}
 
 	if detach {
 		// background mode returns immediately
